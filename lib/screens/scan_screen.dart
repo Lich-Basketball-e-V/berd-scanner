@@ -5,6 +5,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import '../api/scanner_api.dart';
 import '../config.dart';
 import '../widgets/berd_header.dart';
+import '../widgets/hardware_scan_field.dart';
 import '../widgets/verify_result_card.dart';
 import 'pair_screen.dart';
 import 'settings_screen.dart';
@@ -17,15 +18,8 @@ class ScanScreen extends StatefulWidget {
 }
 
 class _ScanScreenState extends State<ScanScreen> {
-  final _manualCtrl = TextEditingController();
-  final _scannerCtrl = MobileScannerController(
-    detectionSpeed: DetectionSpeed.noDuplicates,
-    formats: const [
-      BarcodeFormat.qrCode,
-      BarcodeFormat.code128,
-      BarcodeFormat.code39,
-    ],
-  );
+  MobileScannerController? _scannerCtrl;
+  ScanInputMode _inputMode = ScanInputMode.hardwareScanner;
 
   VerifyResult? _result;
   String? _error;
@@ -34,10 +28,43 @@ class _ScanScreenState extends State<ScanScreen> {
   DateTime _lastAt = DateTime.fromMillisecondsSinceEpoch(0);
 
   @override
+  void initState() {
+    super.initState();
+    loadScanInputMode().then((mode) {
+      if (!mounted) return;
+      setState(() => _inputMode = mode);
+      _syncCameraController();
+    });
+  }
+
+  void _syncCameraController() {
+    if (_inputMode == ScanInputMode.camera) {
+      _scannerCtrl ??= MobileScannerController(
+        detectionSpeed: DetectionSpeed.noDuplicates,
+        formats: const [
+          BarcodeFormat.qrCode,
+          BarcodeFormat.code128,
+          BarcodeFormat.code39,
+        ],
+      );
+    } else {
+      _scannerCtrl?.dispose();
+      _scannerCtrl = null;
+    }
+  }
+
+  @override
   void dispose() {
-    _manualCtrl.dispose();
-    _scannerCtrl.dispose();
+    _scannerCtrl?.dispose();
     super.dispose();
+  }
+
+  Future<void> _setInputMode(ScanInputMode mode) async {
+    if (_inputMode == mode) return;
+    setState(() => _inputMode = mode);
+    await saveScanInputMode(mode);
+    _syncCameraController();
+    setState(() {});
   }
 
   Future<void> _verify(String raw) async {
@@ -85,8 +112,8 @@ class _ScanScreenState extends State<ScanScreen> {
     }
   }
 
-  void _onDetect(BarcodeCapture capture) {
-    if (_busy) return;
+  void _onCameraDetect(BarcodeCapture capture) {
+    if (_busy || _inputMode != ScanInputMode.camera) return;
     final raw = capture.barcodes.isNotEmpty
         ? capture.barcodes.first.rawValue
         : null;
@@ -119,6 +146,8 @@ class _ScanScreenState extends State<ScanScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final camera = _scannerCtrl;
+
     return Scaffold(
       body: SafeArea(
         child: Column(
@@ -152,40 +181,47 @@ class _ScanScreenState extends State<ScanScreen> {
                         ),
                   ),
                   const SizedBox(height: 12),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(14),
-                    child: AspectRatio(
-                      aspectRatio: 16 / 10,
-                      child: MobileScanner(
-                        controller: _scannerCtrl,
-                        onDetect: _onDetect,
+                  SegmentedButton<ScanInputMode>(
+                    segments: const [
+                      ButtonSegment(
+                        value: ScanInputMode.hardwareScanner,
+                        label: Text('Barcode-Scanner'),
+                        icon: Icon(Icons.barcode_reader),
                       ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _manualCtrl,
-                          decoration: const InputDecoration(
-                            labelText: 'Code manuell',
-                            border: OutlineInputBorder(),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      FilledButton(
-                        onPressed: _busy
-                            ? null
-                            : () {
-                                _verify(_manualCtrl.text);
-                                _manualCtrl.clear();
-                              },
-                        child: const Text('Prüfen'),
+                      ButtonSegment(
+                        value: ScanInputMode.camera,
+                        label: Text('Kamera'),
+                        icon: Icon(Icons.photo_camera_outlined),
                       ),
                     ],
+                    selected: {_inputMode},
+                    onSelectionChanged: (selected) {
+                      _setInputMode(selected.first);
+                    },
                   ),
+                  const SizedBox(height: 16),
+                  if (_inputMode == ScanInputMode.hardwareScanner)
+                    HardwareScanField(
+                      enabled: !_busy,
+                      onCode: _verify,
+                    )
+                  else if (camera != null)
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(14),
+                      child: AspectRatio(
+                        aspectRatio: 16 / 10,
+                        child: MobileScanner(
+                          controller: camera,
+                          onDetect: _onCameraDetect,
+                        ),
+                      ),
+                    ),
+                  const SizedBox(height: 12),
+                  if (_inputMode == ScanInputMode.camera)
+                    Text(
+                      'Barcode im Sichtfeld halten. Für USB-/Bluetooth-Scanner oben „Barcode-Scanner“ wählen.',
+                      style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
+                    ),
                   if (_busy)
                     const Padding(
                       padding: EdgeInsets.only(top: 12),

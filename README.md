@@ -27,11 +27,18 @@ flutter build apk --release
 adb install -r build/app/outputs/flutter-apk/app-release.apk
 ```
 
+## Scan-Modi (Check-in)
+
+- **Barcode-Scanner** (Standard): USB- oder Bluetooth-Handscanner (Tastatur-Wedge) – Fokusfeld fängt den Scan inkl. Enter ab.
+- **Kamera**: Gerätekamera über `mobile_scanner` (z. B. ohne externes Scan-Gerät).
+
+Die Auswahl wird auf dem Gerät gespeichert.
+
 ## Ablauf am Tablet
 
 1. App öffnen → ggf. Server-URL prüfen  
 2. Paar-QR aus dem Dashboard scannen → **Gekoppelt**  
-3. Kunden-Barcode scannen → grün/rot + Buchungsdetails  
+3. Modus wählen → Kunden-Barcode scannen → grün/rot + Buchungsdetails  
 4. **Entkoppeln**, wenn das Gerät ausgetauscht wird  
 
 API: `POST /api/booking-scanner/pair` und `POST /api/booking-scanner/verify` (Bearer-Gerätetoken).

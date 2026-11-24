@@ -4,6 +4,25 @@ const pairPrefix = 'LBB-SCAN-PAIR:';
 const checkInPrefix = 'LBB-BERD:';
 const deviceTokenKey = 'lbb_berd_scanner_device_token';
 const bookingBaseUrlKey = 'lbb_berd_scanner_booking_base_url';
+const scanInputModeKey = 'lbb_berd_scanner_scan_input_mode';
+
+/// Standard am Empfang: USB-/Bluetooth-Barcodescanner (Tastatur-Wedge).
+enum ScanInputMode { hardwareScanner, camera }
+
+ScanInputMode parseScanInputMode(String? raw) {
+  if (raw == ScanInputMode.camera.name) return ScanInputMode.camera;
+  return ScanInputMode.hardwareScanner;
+}
+
+Future<ScanInputMode> loadScanInputMode() async {
+  final prefs = await SharedPreferences.getInstance();
+  return parseScanInputMode(prefs.getString(scanInputModeKey));
+}
+
+Future<void> saveScanInputMode(ScanInputMode mode) async {
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.setString(scanInputModeKey, mode.name);
+}
 
 /// Beim Build überschreiben: --dart-define=BOOKING_BASE_URL=https://book.example.de
 const defaultBookingBaseUrl = String.fromEnvironment(
