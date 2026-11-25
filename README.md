@@ -41,6 +41,11 @@ Die Auswahl wird auf dem Gerät gespeichert.
 3. Modus wählen → Kunden-Barcode scannen → grün/rot + Buchungsdetails  
 4. **Entkoppeln**, wenn das Gerät ausgetauscht wird  
 
-API: `POST /api/booking-scanner/pair` und `POST /api/booking-scanner/verify` (Bearer-Gerätetoken).
+Nach dem Koppeln verbindet die App per **WebSocket** (`{BOOKING_BASE_URL}/ws/scanner?token=…`).  
+Check-in über WS; bei Verbindungsproblemen Fallback auf `POST /api/booking-scanner/verify`.
+
+**Zoraxy:** Regel für `book.lbb.cylone.de` → Port 6080 mit **WebSocket aktiv** — siehe `lbb-dash-v2/deploy/zoraxy-berd-booking.md`.
+
+Termine am Tablet: Icon **Termine sperren** (Kalender) — gleiche WS-Verbindung.
 
 Die Web-Variante unter `{BOOKING_BASE_URL}/scanner` bleibt als Fallback verfügbar.
