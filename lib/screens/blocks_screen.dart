@@ -1,9 +1,19 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+import 'package:table_calendar/table_calendar.dart';
 
 import '../api/scanner_ws.dart';
 import '../widgets/berd_header.dart';
+
+class _SlotDay {
+  _SlotDay({required this.date, required this.weekdayLabel, required this.slots});
+
+  final String date;
+  final String weekdayLabel;
+  final List<Map<String, dynamic>> slots;
+}
 
 class BlocksScreen extends StatefulWidget {
   const BlocksScreen({super.key, required this.ws});
@@ -15,52 +25,47 @@ class BlocksScreen extends StatefulWidget {
 }
 
 class _BlocksScreenState extends State<BlocksScreen> {
-  final _dateCtrl = TextEditingController();
-  final _timeCtrl = TextEditingController();
-  final _reasonCtrl = TextEditingController();
+  static final DateFormat _keyFmt = DateFormat('yyyy-MM-dd');
+
   List<Map<String, dynamic>> _services = [];
-  List<Map<String, dynamic>> _blocks = [];
   int? _serviceId;
+  String? _serviceName;
+
+  DateTime _focusedDay = DateTime.now();
+  DateTime _selectedDay = DateTime.now();
+
+  final Map<String, _SlotDay> _daysByDate = {};
   String? _error;
   bool _busy = false;
 
   @override
   void initState() {
     super.initState();
-  _dateCtrl.text = DateTime.now().toIso8601String().substring(0, 10);
-    unawaited(_load());
+    _selectedDay = DateTime(_focusedDay.year, _focusedDay.month, _focusedDay.day);
+    unawaited(_bootstrap());
   }
 
-  @override
-  void dispose() {
-    _dateCtrl.dispose();
-    _timeCtrl.dispose();
-    _reasonCtrl.dispose();
-    super.dispose();
-  }
-
-  Future<void> _load() async {
+  Future<void> _bootstrap() async {
     setState(() {
       _busy = true;
       _error = null;
     });
     try {
       final svc = await widget.ws.request('services.list', const {});
-      final bl = await widget.ws.request('blocks.list', const {});
       final svcData = svc['data'];
-      final blData = bl['data'];
-      setState(() {
-        if (svcData is Map && svcData['items'] is List) {
-          _services = (svcData['items'] as List)
-              .map((e) => Map<String, dynamic>.from(e as Map))
-              .toList();
-        }
-        if (blData is Map && blData['items'] is List) {
-          _blocks = (blData['items'] as List)
-              .map((e) => Map<String, dynamic>.from(e as Map))
-              .toList();
-        }
-      });
+      if (svcData is Map && svcData['items'] is List) {
+        final list = (svcData['items'] as List)
+            .map((e) => Map<String, dynamic>.from(e as Map))
+            .toList();
+        setState(() {
+          _services = list;
+          if (list.isNotEmpty) {
+            _serviceId = list.first['id'] as int?;
+            _serviceName = list.first['name']?.toString();
+          }
+        });
+      }
+      await _loadSlots();
     } catch (e) {
       setState(() => _error = e.toString());
     } finally {
@@ -68,30 +73,78 @@ class _BlocksScreenState extends State<BlocksScreen> {
     }
   }
 
-  Future<void> _createBlock() async {
-    final date = _dateCtrl.text.trim();
-    if (date.isEmpty) {
-      setState(() => _error = 'Datum fehlt');
-      return;
-    }
+  Future<void> _loadSlots() async {
+    if (_serviceId == null) return;
+    final from = _keyFmt.format(DateTime.now());
+    final to = _keyFmt.format(DateTime.now().add(const Duration(days: 56)));
     setState(() {
       _busy = true;
       _error = null;
     });
     try {
-      final payload = <String, dynamic>{
+      final res = await widget.ws.request('slots.list', {
+        'service_id': _serviceId,
+        'from': from,
+        'to': to,
+      });
+      final data = res['data'];
+      final days = data is Map ? data['days'] : null;
+      final map = <String, _SlotDay>{};
+      if (days is List) {
+        for (final raw in days) {
+          if (raw is! Map) continue;
+          final date = raw['date']?.toString() ?? '';
+          if (date.isEmpty) continue;
+          final slots = (raw['slots'] is List)
+              ? (raw['slots'] as List)
+                  .map((s) => Map<String, dynamic>.from(s as Map))
+                  .toList()
+              : <Map<String, dynamic>>[];
+          map[date] = _SlotDay(
+            date: date,
+            weekdayLabel: raw['weekday_label']?.toString() ?? '',
+            slots: slots,
+          );
+        }
+      }
+      setState(() => _daysByDate
+        ..clear()
+        ..addAll(map));
+    } catch (e) {
+      setState(() => _error = e.toString());
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _toggleSlot(String date, String start, bool currentlyBlocked) async {
+    final action = currentlyBlocked ? 'Sperre aufheben?' : 'Termin sperren?';
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(action),
+        content: Text('$date · $start${_serviceName != null ? ' · $_serviceName' : ''}'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Abbrechen')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('OK')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    setState(() => _busy = true);
+    try {
+      await widget.ws.request('blocks.toggle', {
+        'service_id': _serviceId,
         'slot_date': date,
-        'reason': _reasonCtrl.text.trim(),
-      };
-      if (_serviceId != null) payload['service_id'] = _serviceId;
-      final time = _timeCtrl.text.trim();
-      if (time.isNotEmpty) payload['start_time'] = time;
-      await widget.ws.request('blocks.create', payload);
-      await _load();
-      _reasonCtrl.clear();
+        'start_time': start,
+      });
+      await _loadSlots();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Termin gesperrt')),
+          SnackBar(
+            content: Text(currentlyBlocked ? 'Sperre aufgehoben' : 'Termin gesperrt'),
+          ),
         );
       }
     } catch (e) {
@@ -101,31 +154,18 @@ class _BlocksScreenState extends State<BlocksScreen> {
     }
   }
 
-  Future<void> _deleteBlock(int id) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Sperre aufheben?'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Nein')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Ja')),
-        ],
-      ),
-    );
-    if (ok != true) return;
-    setState(() => _busy = true);
-    try {
-      await widget.ws.request('blocks.delete', {'id': id});
-      await _load();
-    } catch (e) {
-      setState(() => _error = e.toString());
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
+  int _blockedCountOn(String dateKey) {
+    final day = _daysByDate[dateKey];
+    if (day == null) return 0;
+    return day.slots.where((s) => s['blocked'] == true).length;
   }
 
   @override
   Widget build(BuildContext context) {
+    final selectedKey = _keyFmt.format(_selectedDay);
+    final selectedDay = _daysByDate[selectedKey];
+    final theme = Theme.of(context);
+
     return Scaffold(
       body: SafeArea(
         child: Column(
@@ -134,95 +174,224 @@ class _BlocksScreenState extends State<BlocksScreen> {
               padding: EdgeInsets.fromLTRB(12, 8, 12, 0),
               child: BerdHeader(showPaired: true),
             ),
+            if (_busy) const LinearProgressIndicator(minHeight: 2),
             Expanded(
               child: ListView(
-                padding: const EdgeInsets.all(20),
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
                 children: [
                   Text(
                     'Termine sperren',
-                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                          fontWeight: FontWeight.w700,
-                        ),
+                    style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Im Kalender einen Tag wählen und freie Slots antippen — erneut antippen hebt die Sperre auf.',
+                    style: theme.textTheme.bodyMedium?.copyWith(color: Colors.grey.shade700),
                   ),
                   const SizedBox(height: 16),
-                  DropdownButtonFormField<int?>(
-                    value: _serviceId,
-                    decoration: const InputDecoration(
-                      labelText: 'Dienst (optional)',
-                      border: OutlineInputBorder(),
+                  if (_services.length > 1)
+                    DropdownButtonFormField<int>(
+                      initialValue: _serviceId,
+                      decoration: const InputDecoration(
+                        labelText: 'Angebot',
+                        border: OutlineInputBorder(),
+                      ),
+                      items: _services
+                          .map(
+                            (s) => DropdownMenuItem(
+                              value: s['id'] as int,
+                              child: Text(s['name']?.toString() ?? 'Dienst'),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: _busy
+                          ? null
+                          : (v) {
+                              setState(() {
+                                _serviceId = v;
+                                _serviceName = _services
+                                    .cast<Map<String, dynamic>>()
+                                    .firstWhere((s) => s['id'] == v)['name']
+                                    ?.toString();
+                              });
+                              unawaited(_loadSlots());
+                            },
                     ),
-                    items: [
-                      const DropdownMenuItem(value: null, child: Text('Alle Dienste')),
-                      ..._services.map(
-                        (s) => DropdownMenuItem(
-                          value: s['id'] as int,
-                          child: Text(s['name']?.toString() ?? 'Dienst'),
+                  const SizedBox(height: 12),
+                  Card(
+                    clipBehavior: Clip.antiAlias,
+                    child: TableCalendar<void>(
+                      firstDay: DateTime.now().subtract(const Duration(days: 1)),
+                      lastDay: DateTime.now().add(const Duration(days: 90)),
+                      focusedDay: _focusedDay,
+                      locale: 'de_DE',
+                      startingDayOfWeek: StartingDayOfWeek.monday,
+                      calendarFormat: CalendarFormat.month,
+                      selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
+                      onDaySelected: (selected, focused) {
+                        setState(() {
+                          _selectedDay = DateTime(selected.year, selected.month, selected.day);
+                          _focusedDay = focused;
+                        });
+                      },
+                      onPageChanged: (focused) => setState(() => _focusedDay = focused),
+                      calendarStyle: CalendarStyle(
+                        todayDecoration: BoxDecoration(
+                          color: theme.colorScheme.primaryContainer,
+                          shape: BoxShape.circle,
+                        ),
+                        selectedDecoration: BoxDecoration(
+                          color: theme.colorScheme.primary,
+                          shape: BoxShape.circle,
+                        ),
+                        markerDecoration: BoxDecoration(
+                          color: theme.colorScheme.error,
+                          shape: BoxShape.circle,
                         ),
                       ),
-                    ],
-                    onChanged: _busy ? null : (v) => setState(() => _serviceId = v),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: _dateCtrl,
-                    decoration: const InputDecoration(
-                      labelText: 'Datum (YYYY-MM-DD)',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: _timeCtrl,
-                    decoration: const InputDecoration(
-                      labelText: 'Uhrzeit (HH:MM, leer = ganzer Tag)',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: _reasonCtrl,
-                    decoration: const InputDecoration(
-                      labelText: 'Grund (optional)',
-                      border: OutlineInputBorder(),
+                      calendarBuilders: CalendarBuilders(
+                        markerBuilder: (context, date, events) {
+                          final key = _keyFmt.format(date);
+                          final n = _blockedCountOn(key);
+                          if (n == 0) return null;
+                          return Positioned(
+                            bottom: 1,
+                            child: Text(
+                              '●',
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: theme.colorScheme.error,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
                     ),
                   ),
                   const SizedBox(height: 16),
-                  FilledButton(
-                    onPressed: _busy ? null : () => unawaited(_createBlock()),
-                    child: const Text('Sperre anlegen'),
-                  ),
                   if (_error != null)
                     Padding(
-                      padding: const EdgeInsets.only(top: 12),
+                      padding: const EdgeInsets.only(bottom: 12),
                       child: Text(_error!, style: const TextStyle(color: Color(0xFFB91C1C))),
                     ),
-                  const SizedBox(height: 24),
-                  Text('Aktuelle Sperren', style: Theme.of(context).textTheme.titleMedium),
-                  const SizedBox(height: 8),
-                  if (_blocks.isEmpty)
-                    const Text('Keine Sperren', style: TextStyle(color: Colors.grey)),
-                  ..._blocks.take(30).map((b) {
-                    final id = b['id'] as int? ?? 0;
-                    final line = [
-                      b['slot_date'],
-                      if (b['start_time'] != null) b['start_time'],
-                      if (b['service_name'] != null) '· ${b['service_name']}',
-                      if (b['reason'] != null && '$b[reason]'.isNotEmpty) '· ${b['reason']}',
-                    ].join(' ');
-                    return ListTile(
-                      title: Text(line),
-                      trailing: IconButton(
-                        icon: const Icon(Icons.delete_outline),
-                        onPressed: _busy ? null : () => unawaited(_deleteBlock(id)),
+                  Row(
+                    children: [
+                      Text(
+                        selectedDay != null
+                            ? '${selectedDay.weekdayLabel} · $selectedKey'
+                            : selectedKey,
+                        style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
                       ),
-                    );
-                  }),
+                      const Spacer(),
+                      IconButton(
+                        onPressed: _busy ? null : () => unawaited(_loadSlots()),
+                        icon: const Icon(Icons.refresh),
+                        tooltip: 'Aktualisieren',
+                      ),
+                    ],
+                  ),
+                  _SlotLegend(),
+                  const SizedBox(height: 12),
+                  if (selectedDay == null || selectedDay.slots.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 24),
+                      child: Center(child: Text('Keine buchbaren Slots an diesem Tag')),
+                    )
+                  else
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: selectedDay.slots.map((slot) {
+                        final start = slot['start']?.toString() ?? '';
+                        final end = slot['end']?.toString() ?? '';
+                        final past = slot['past'] == true;
+                        final blocked = slot['blocked'] == true;
+                        final taken = slot['taken'] == true && !blocked;
+                        final available = slot['available'] == true;
+
+                        Color bg;
+                        Color fg;
+                        String label;
+                        VoidCallback? onTap;
+
+                        if (past) {
+                          bg = Colors.grey.shade200;
+                          fg = Colors.grey.shade600;
+                          label = '$start–$end';
+                          onTap = null;
+                        } else if (blocked) {
+                          bg = const Color(0xFFFEE2E2);
+                          fg = const Color(0xFFB91C1C);
+                          label = '$start gesperrt';
+                          onTap = () => unawaited(_toggleSlot(selectedKey, start, true));
+                        } else if (taken) {
+                          bg = const Color(0xFFFEF3C7);
+                          fg = const Color(0xFFB45309);
+                          label = '$start belegt';
+                          onTap = null;
+                        } else if (available) {
+                          bg = const Color(0xFFD1FAE5);
+                          fg = const Color(0xFF047857);
+                          label = '$start–$end frei';
+                          onTap = () => unawaited(_toggleSlot(selectedKey, start, false));
+                        } else {
+                          bg = Colors.grey.shade200;
+                          fg = Colors.grey.shade700;
+                          label = '$start–$end';
+                          onTap = null;
+                        }
+
+                        return Material(
+                          color: bg,
+                          borderRadius: BorderRadius.circular(12),
+                          child: InkWell(
+                            onTap: _busy ? null : onTap,
+                            borderRadius: BorderRadius.circular(12),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                              child: Text(
+                                label,
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 15,
+                                  color: fg,
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                    ),
                 ],
               ),
             ),
           ],
         ),
       ),
+    );
+  }
+}
+
+class _SlotLegend extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    Widget chip(String text, Color bg, Color fg) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(8)),
+        child: Text(text, style: TextStyle(fontSize: 12, color: fg, fontWeight: FontWeight.w500)),
+      );
+    }
+
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: [
+        chip('Frei', const Color(0xFFD1FAE5), const Color(0xFF047857)),
+        chip('Gesperrt', const Color(0xFFFEE2E2), const Color(0xFFB91C1C)),
+        chip('Belegt', const Color(0xFFFEF3C7), const Color(0xFFB45309)),
+        chip('Vorbei', Colors.grey.shade200, Colors.grey.shade600),
+      ],
     );
   }
 }
