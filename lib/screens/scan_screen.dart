@@ -71,6 +71,9 @@ class _ScanScreenState extends State<ScanScreen> {
         detectionSpeed: DetectionSpeed.noDuplicates,
         formats: const [
           BarcodeFormat.qrCode,
+          BarcodeFormat.ean13,
+          BarcodeFormat.ean8,
+          BarcodeFormat.upcA,
           BarcodeFormat.code128,
           BarcodeFormat.code39,
         ],

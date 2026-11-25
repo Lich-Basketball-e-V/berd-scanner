@@ -75,5 +75,9 @@ String normalizeCheckInCode(String raw) {
   if (s.startsWith(checkInPrefix)) {
     s = s.substring(checkInPrefix.length).trim();
   }
+  final digitsOnly = s.replaceAll(RegExp(r'\D'), '');
+  if (digitsOnly.length >= 12 && digitsOnly.length <= 13 && RegExp(r'^2\d+$').hasMatch(digitsOnly)) {
+    return digitsOnly;
+  }
   return s;
 }
