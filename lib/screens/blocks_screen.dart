@@ -35,6 +35,7 @@ class _BlocksScreenState extends State<BlocksScreen> {
   DateTime _selectedDay = DateTime.now();
 
   final Map<String, _SlotDay> _daysByDate = {};
+  final Set<String> _wholeDayBlockedDates = {};
   String? _error;
   bool _busy = false;
 
@@ -65,11 +66,38 @@ class _BlocksScreenState extends State<BlocksScreen> {
           }
         });
       }
-      await _loadSlots();
+      await _reloadCalendarData();
     } catch (e) {
       setState(() => _error = e.toString());
     } finally {
       if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _reloadCalendarData() async {
+    await Future.wait([_loadSlots(), _loadWholeDayBlocks()]);
+  }
+
+  Future<void> _loadWholeDayBlocks() async {
+    try {
+      final bl = await widget.ws.request('blocks.list', const {});
+      final blData = bl['data'];
+      final dates = <String>{};
+      if (blData is Map && blData['items'] is List) {
+        for (final raw in blData['items'] as List) {
+          if (raw is! Map) continue;
+          final map = Map<String, dynamic>.from(raw);
+          final time = map['start_time'];
+          if (time != null && '$time'.trim().isNotEmpty) continue;
+          final sid = map['service_id'];
+          if (_serviceId != null && sid != null && sid != _serviceId) continue;
+          final d = map['slot_date']?.toString() ?? '';
+          if (d.isNotEmpty) dates.add(d);
+        }
+      }
+      if (mounted) setState(() => _wholeDayBlockedDates..clear()..addAll(dates));
+    } catch (_) {
+      /* Marker optional — Slots bleiben gültig */
     }
   }
 
@@ -139,7 +167,7 @@ class _BlocksScreenState extends State<BlocksScreen> {
         'slot_date': date,
         'start_time': start,
       });
-      await _loadSlots();
+      await _reloadCalendarData();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -152,6 +180,59 @@ class _BlocksScreenState extends State<BlocksScreen> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  bool _isWholeDayBlocked(String dateKey) => _wholeDayBlockedDates.contains(dateKey);
+
+  Future<void> _toggleWholeDay(String date) async {
+    final whole = _isWholeDayBlocked(date);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(whole ? 'Ganztägige Sperre aufheben?' : 'Ganzen Tag sperren?'),
+        content: Text(
+          whole
+              ? '$date — alle Slots werden wieder buchbar.'
+              : '$date${_serviceName != null ? ' · $_serviceName' : ''}\n\nAlle buchbaren Zeiten an diesem Tag werden gesperrt.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Abbrechen')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('OK')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    setState(() => _busy = true);
+    try {
+      await widget.ws.request('blocks.toggle', {
+        'service_id': _serviceId,
+        'slot_date': date,
+      });
+      await _reloadCalendarData();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(whole ? 'Ganztägige Sperre aufgehoben' : 'Ganzer Tag gesperrt')),
+        );
+      }
+    } catch (e) {
+      setState(() => _error = e.toString());
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  void _onDayLongPressed(DateTime day) {
+    final today = DateTime.now();
+    final dayOnly = DateTime(day.year, day.month, day.day);
+    final todayOnly = DateTime(today.year, today.month, today.day);
+    if (dayOnly.isBefore(todayOnly)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Vergangene Tage können nicht gesperrt werden')),
+      );
+      return;
+    }
+    unawaited(_toggleWholeDay(_keyFmt.format(dayOnly)));
   }
 
   int _blockedCountOn(String dateKey) {
@@ -185,7 +266,8 @@ class _BlocksScreenState extends State<BlocksScreen> {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    'Im Kalender einen Tag wählen und freie Slots antippen — erneut antippen hebt die Sperre auf.',
+                    'Tag antippen = Slots darunter. Slot antippen = einzelne Stunde sperren/freigeben. '
+                    'Tag gedrückt halten = ganzer Tag sperren oder ganztägige Sperre aufheben.',
                     style: theme.textTheme.bodyMedium?.copyWith(color: Colors.grey.shade700),
                   ),
                   const SizedBox(height: 16),
@@ -214,7 +296,7 @@ class _BlocksScreenState extends State<BlocksScreen> {
                                     .firstWhere((s) => s['id'] == v)['name']
                                     ?.toString();
                               });
-                              unawaited(_loadSlots());
+                              unawaited(_reloadCalendarData());
                             },
                     ),
                   const SizedBox(height: 12),
@@ -234,6 +316,13 @@ class _BlocksScreenState extends State<BlocksScreen> {
                           _focusedDay = focused;
                         });
                       },
+                      onDayLongPressed: (day, focused) {
+                        setState(() {
+                          _selectedDay = DateTime(day.year, day.month, day.day);
+                          _focusedDay = focused;
+                        });
+                        if (!_busy) _onDayLongPressed(day);
+                      },
                       onPageChanged: (focused) => setState(() => _focusedDay = focused),
                       calendarStyle: CalendarStyle(
                         todayDecoration: BoxDecoration(
@@ -252,16 +341,26 @@ class _BlocksScreenState extends State<BlocksScreen> {
                       calendarBuilders: CalendarBuilders(
                         markerBuilder: (context, date, events) {
                           final key = _keyFmt.format(date);
+                          if (_isWholeDayBlocked(key)) {
+                            return Positioned(
+                              bottom: 2,
+                              child: Container(
+                                width: 18,
+                                height: 4,
+                                decoration: BoxDecoration(
+                                  color: theme.colorScheme.error,
+                                  borderRadius: BorderRadius.circular(2),
+                                ),
+                              ),
+                            );
+                          }
                           final n = _blockedCountOn(key);
                           if (n == 0) return null;
                           return Positioned(
                             bottom: 1,
                             child: Text(
                               '●',
-                              style: TextStyle(
-                                fontSize: 10,
-                                color: theme.colorScheme.error,
-                              ),
+                              style: TextStyle(fontSize: 10, color: theme.colorScheme.error),
                             ),
                           );
                         },
@@ -284,7 +383,7 @@ class _BlocksScreenState extends State<BlocksScreen> {
                       ),
                       const Spacer(),
                       IconButton(
-                        onPressed: _busy ? null : () => unawaited(_loadSlots()),
+                        onPressed: _busy ? null : () => unawaited(_reloadCalendarData()),
                         icon: const Icon(Icons.refresh),
                         tooltip: 'Aktualisieren',
                       ),
@@ -292,6 +391,34 @@ class _BlocksScreenState extends State<BlocksScreen> {
                   ),
                   _SlotLegend(),
                   const SizedBox(height: 12),
+                  if (_isWholeDayBlocked(selectedKey))
+                    Material(
+                      color: const Color(0xFFFEE2E2),
+                      borderRadius: BorderRadius.circular(12),
+                      child: InkWell(
+                        onTap: _busy ? null : () => unawaited(_toggleWholeDay(selectedKey)),
+                        borderRadius: BorderRadius.circular(12),
+                        child: const Padding(
+                          padding: EdgeInsets.all(16),
+                          child: Row(
+                            children: [
+                              Icon(Icons.event_busy, color: Color(0xFFB91C1C)),
+                              SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  'Ganzer Tag gesperrt — antippen zum Aufheben (oder Tag gedrückt halten)',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w600,
+                                    color: Color(0xFFB91C1C),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  if (_isWholeDayBlocked(selectedKey)) const SizedBox(height: 12),
                   if (selectedDay == null || selectedDay.slots.isEmpty)
                     const Padding(
                       padding: EdgeInsets.symmetric(vertical: 24),
@@ -319,11 +446,13 @@ class _BlocksScreenState extends State<BlocksScreen> {
                           fg = Colors.grey.shade600;
                           label = '$start–$end';
                           onTap = null;
-                        } else if (blocked) {
+                        } else if (_isWholeDayBlocked(selectedKey) || blocked) {
                           bg = const Color(0xFFFEE2E2);
                           fg = const Color(0xFFB91C1C);
-                          label = '$start gesperrt';
-                          onTap = () => unawaited(_toggleSlot(selectedKey, start, true));
+                          label = _isWholeDayBlocked(selectedKey) ? '$start gesperrt (Tag)' : '$start gesperrt';
+                          onTap = _isWholeDayBlocked(selectedKey)
+                              ? () => unawaited(_toggleWholeDay(selectedKey))
+                              : () => unawaited(_toggleSlot(selectedKey, start, true));
                         } else if (taken) {
                           bg = const Color(0xFFFEF3C7);
                           fg = const Color(0xFFB45309);
@@ -391,6 +520,7 @@ class _SlotLegend extends StatelessWidget {
         chip('Gesperrt', const Color(0xFFFEE2E2), const Color(0xFFB91C1C)),
         chip('Belegt', const Color(0xFFFEF3C7), const Color(0xFFB45309)),
         chip('Vorbei', Colors.grey.shade200, Colors.grey.shade600),
+        chip('Ganztag ●', const Color(0xFFFEE2E2), const Color(0xFFB91C1C)),
       ],
     );
   }
