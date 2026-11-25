@@ -1,12 +1,16 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../api/scanner_api.dart';
+import '../api/scanner_ws.dart';
 import '../config.dart';
 import '../widgets/berd_header.dart';
 import '../widgets/hardware_scan_field.dart';
 import '../widgets/verify_result_card.dart';
+import 'blocks_screen.dart';
 import 'pair_screen.dart';
 import 'settings_screen.dart';
 
@@ -20,6 +24,7 @@ class ScanScreen extends StatefulWidget {
 class _ScanScreenState extends State<ScanScreen> {
   MobileScannerController? _scannerCtrl;
   ScanInputMode _inputMode = ScanInputMode.hardwareScanner;
+  final ScannerWsClient _ws = ScannerWsClient();
 
   VerifyResult? _result;
   String? _error;
@@ -30,11 +35,34 @@ class _ScanScreenState extends State<ScanScreen> {
   @override
   void initState() {
     super.initState();
+    _ws.onRevoked = () async {
+      await saveDeviceToken(null);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Gerät wurde im Dashboard abgemeldet.')),
+      );
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const PairScreen()),
+      );
+    };
     loadScanInputMode().then((mode) {
       if (!mounted) return;
       setState(() => _inputMode = mode);
       _syncCameraController();
     });
+    unawaited(_connectWs());
+  }
+
+  Future<void> _connectWs() async {
+    final deviceToken = await loadDeviceToken();
+    if (deviceToken == null) return;
+    try {
+      final base = await loadBookingBaseUrl();
+      final wsUrl = scannerWsUrlFromBookingBase(base);
+      await _ws.connect(wsUrl, deviceToken);
+    } catch (_) {
+      /* HTTP-Fallback bei Verify */
+    }
   }
 
   void _syncCameraController() {
@@ -55,6 +83,7 @@ class _ScanScreenState extends State<ScanScreen> {
 
   @override
   void dispose() {
+    unawaited(_ws.disconnect());
     _scannerCtrl?.dispose();
     super.dispose();
   }
@@ -89,8 +118,13 @@ class _ScanScreenState extends State<ScanScreen> {
       _error = null;
     });
     try {
-      final base = await loadBookingBaseUrl();
-      final result = await ScannerApi(base).verify(deviceToken, code);
+      final VerifyResult result;
+      if (_ws.isConnected) {
+        result = await _ws.verify(code);
+      } else {
+        final base = await loadBookingBaseUrl();
+        result = await ScannerApi(base).verify(deviceToken, code);
+      }
       if (result.admissionGranted) {
         HapticFeedback.mediumImpact();
       } else {
@@ -157,6 +191,19 @@ class _ScanScreenState extends State<ScanScreen> {
               child: Row(
                 children: [
                   const Expanded(child: BerdHeader(showPaired: true)),
+                  IconButton(
+                    tooltip: 'Termine sperren',
+                    onPressed: _ws.isConnected
+                        ? () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => BlocksScreen(ws: _ws),
+                              ),
+                            );
+                          }
+                        : null,
+                    icon: const Icon(Icons.event_busy_outlined),
+                  ),
                   IconButton(
                     tooltip: 'Einstellungen',
                     onPressed: () {
