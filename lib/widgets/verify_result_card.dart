@@ -9,29 +9,49 @@ class VerifyResultCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final ok = result.admissionGranted;
     final b = result.booking;
+    final already = result.alreadyRedeemed;
+    final ok = result.admissionGranted;
+
+    Color bg;
+    Color border;
+    Color titleColor;
+    String title;
+    if (ok) {
+      bg = const Color(0xFFECFDF3);
+      border = const Color(0xFF86EFAC);
+      titleColor = const Color(0xFF15803D);
+      title = '✓ Entwertet — Einlass';
+    } else if (already) {
+      bg = const Color(0xFFFFFBEB);
+      border = const Color(0xFFFCD34D);
+      titleColor = const Color(0xFFB45309);
+      title = '⚠ Bereits entwertet';
+    } else {
+      bg = const Color(0xFFFEF2F2);
+      border = const Color(0xFFFECACA);
+      titleColor = const Color(0xFFB91C1C);
+      title = '✗ Nicht gültig';
+    }
+
     return Material(
-      color: ok ? const Color(0xFFECFDF3) : const Color(0xFFFEF2F2),
+      color: bg,
       borderRadius: BorderRadius.circular(14),
       child: Container(
         width: double.infinity,
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-            color: ok ? const Color(0xFF86EFAC) : const Color(0xFFFECACA),
-            width: 2,
-          ),
+          border: Border.all(color: border, width: 2),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              ok ? '✓ Check-in gültig' : '✗ Nicht gültig',
+              title,
               style: Theme.of(context).textTheme.titleLarge?.copyWith(
                     fontWeight: FontWeight.w700,
-                    color: ok ? const Color(0xFF15803D) : const Color(0xFFB91C1C),
+                    color: titleColor,
                   ),
             ),
             const SizedBox(height: 6),
@@ -47,6 +67,8 @@ class VerifyResultCard extends StatelessWidget {
                   'Spieler',
                   (b['players'] as List).map((e) => e.toString()).join(', '),
                 ),
+              if (b['checked_in_at'] != null)
+                _row('Entwertet', _formatCheckedIn(b['checked_in_at']?.toString())),
             ],
           ],
         ),
@@ -59,6 +81,13 @@ class VerifyResultCard extends StatelessWidget {
     final start = b['start_time']?.toString() ?? '';
     if (date.isEmpty) return '—';
     return start.isNotEmpty ? '$date · $start' : date;
+  }
+
+  String _formatCheckedIn(String? raw) {
+    if (raw == null || raw.isEmpty) return '—';
+    final m = RegExp(r'^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})').firstMatch(raw);
+    if (m != null) return '${m.group(1)} ${m.group(2)} Uhr';
+    return raw;
   }
 
   Widget _row(String label, String? value) {

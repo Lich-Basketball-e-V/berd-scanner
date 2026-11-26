@@ -107,6 +107,7 @@ class ScannerWsClient {
     final json = await request('scanner.verify', {
       'token': rawCode,
       'scan': rawCode,
+      'redeem': true,
     });
     if (json['success'] != true) {
       throw ScannerApiException(

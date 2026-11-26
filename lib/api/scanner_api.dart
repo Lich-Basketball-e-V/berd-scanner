@@ -60,6 +60,7 @@ class ScannerApi {
         'token': rawCode,
         'payload': rawCode,
         'scan': rawCode,
+        'redeem': true,
       }),
     );
     Map<String, dynamic> json;
@@ -84,12 +85,18 @@ class VerifyResult {
     required this.ok,
     required this.message,
     this.booking,
+    this.redeemed = false,
+    this.alreadyRedeemed = false,
+    this.checkedInAt,
   });
 
   final bool valid;
   final bool ok;
   final String message;
   final Map<String, dynamic>? booking;
+  final bool redeemed;
+  final bool alreadyRedeemed;
+  final String? checkedInAt;
 
   factory VerifyResult.fromJson(Map<String, dynamic> json) {
     return VerifyResult(
@@ -99,6 +106,9 @@ class VerifyResult {
       booking: json['booking'] is Map<String, dynamic>
           ? json['booking'] as Map<String, dynamic>
           : null,
+      redeemed: json['redeemed'] == true,
+      alreadyRedeemed: json['already_redeemed'] == true,
+      checkedInAt: json['checked_in_at']?.toString(),
     );
   }
 
